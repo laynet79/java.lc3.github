@@ -1,0 +1,54 @@
+;;-----------------------------------------------------------
+;;	This program demonstrates integer division
+;;-----------------------------------------------------------
+		.ORIG	#0
+BEGIN	LD		R1, ARG1	; place arguments into R1 and R2
+		LD		R2, ARG2
+		JSR		DIV			; perform division
+		ST		R0, RESULT	; save result
+		HALT
+		
+;;------------- integer division ----------------------
+;; INPUT: 	R1 - dividend
+;;			R2 - divisor
+;; OUTPUT:	R0 - quotient
+;;			R1 - remainder
+DIV		AND		R0, R0, #0	; zero result register
+		AND		R3, R3, #0  ; R3 will keep track of result sign
+		ADD		R3, R3, #1	; assume R2 is negative
+		ADD		R2, R2, #0	; make R2 (divisor) be negative
+		BRn		DIVA1		; branch to arg 1 (dividend) processing
+		AND		R3, R3, #0	; positive so negate
+		NOT		R2, R2
+		ADD		R2, R2, #1
+DIVA1	ADD		R1, R1, #0	; make R1 (dividend) positive
+		BRzp	DIVLOOP
+		ADD		R3, R3, #0	; negative so update sign bit and negate
+		BRz		DIVA1Z
+		AND		R3, R3, #0	; result sign will be positive
+		BR		DIVA1N
+DIVA1Z	ADD		R3, R3, #1	; result sign will be negative
+DIVA1N	NOT		R1, R1		; negate dividend
+		ADD		R1, R1, #1
+DIVLOOP	BRnz	DIVFIN		; perform division by multiple subtracts (loop)
+		ADD		R0, R0, #1
+		ADD		R1, R1, R2
+		BR		DIVLOOP
+DIVFIN	ADD		R1, R1, #0	; adjust the result if we overshot and fix the remainder
+		BRz		DIVSN
+		ADD		R0, R0, #-1
+		NOT		R2, R2
+		ADD		R2, R2, #1
+		ADD		R1, R1, R2
+DIVSN	ADD		R3, R3, #0	; fix the sign of the result
+		BRz		DIVEND
+		NOT		R0, R0
+		ADD		R0, R0, #1
+DIVEND	RET					; return result in R0
+		
+;;------------------- variables -----------------------------
+ARG1	.FILL	#15
+ARG2	.FILL	#6
+RESULT	.FILL	#0
+;;-----------------------------------------------------------
+		.END

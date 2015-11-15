@@ -1,0 +1,681 @@
+;;-----------------------------------------------------------
+;;	This program implements a fixed point square root function.
+;;
+;;		For this program we represent real numbers as 16 bit signed
+;;		scaled integers, with the lower 8 bits representing the
+;;		fractional part.  We refer to these numbers as fixed point S7.8
+;;		The range of these numbers is -256 <= n < 256
+;;			For example the number 1.0 would be 0x0100
+;;			and 8.5 would be 0x0880
+;;-----------------------------------------------------------
+		.ORIG	x3000
+LOOP		LEA	R0, PROMPT	; place argument into R0
+		JSR	FPREAD
+		BRn	ERROR
+		ADD	R1, R0, #0	; save copyt of input number in R1
+		JSR	FPSQRT		; perform square root
+		ADD	R2, R0, #0	; save results of square root in R2
+
+		LEA	R0, SQRTMSGS	
+		PUTS
+		ADD	R0, R1, #0
+		JSR	FPWRITE
+		LEA	R0, SQRTMSGE
+		PUTS
+		ADD	R0, R2, #0
+		JSR	FPWRITE
+		LEA	R0, NEWLINE
+		PUTS
+		BR	LOOP
+ERROR		LEA	R0, ERRORMSG	
+		PUTS
+		BR	LOOP
+		HALT
+
+PROMPT		.STRINGZ	"Enter a number: "
+SQRTMSGS	.STRINGZ	"sqrt("
+SQRTMSGE	.STRINGZ	") = "
+NEWLINE		.STRINGZ	"\n"
+ERRORMSG	.STRINGZ	"ERROR: invalid number (legal range: 0 - 127.99)\n"
+		
+;;---------------------- Square Root ------------------------
+;; This function computes the square root of an S7.8
+;; fixed point number using Newton Raphson iteration. The following
+;; algorithm is used.
+;;
+;;			n = number we're taking the square root of
+;;			s = starting guess for the square root
+;;			for (i = 0; i < 3; i++)
+;;				s = s + (n - s*s) / (2*s);
+;;			return s;
+;;
+;; For the starting guess we compute the closest power of two of
+;; the integer part of n.
+;;
+;; This function uses the fixed point FPMULT and FPDIV functions
+;;		FPMULT
+;;		FPDIV
+;; It also uses the integer multiply and divide functions MULT
+;; and DIV to do shifting
+;;
+;; INPUT: 	R0 - n (S7.8)
+;; OUTPUT:	R0 - sqrt(n) (S7.8)
+;;-----------------------------------------------------------
+FPSQRT		ST	R1, FPSQRTR1	; save registers that we need to use
+		ST	R2, FPSQRTR2
+		ST	R3, FPSQRTR3
+		ST	R4, FPSQRTR4
+		ST	R5, FPSQRTR5
+		ST	R7, FPSQRTR7
+
+		ADD	R2, R0, #0	; if n == 0 then return 0, store n = R2
+		BRz	FPSQRTEND
+
+		;; The following code computes a starting guess for the square root
+		;; as the nearest power of 2 >= 1 of the integer part of n, using the
+		;; follow algorithm.
+		;;
+		;;	w = n >> 1024;
+		;;	s = 1;
+		;;	while (w != 0)
+		;;	{
+		;;		s++;
+		;;		w >>= 1;
+		;;	}
+		;;
+		LD	R4, FPSQRTFP1	; load fixed point 1 into R4 for adding
+		ADD	R3, R4, #0		; initialize s to a fixed point 1 and store in R3
+		ADD	R0, R2, #0		; set w = n >> 10 (shift using divide) store in R0
+		LD	R1, FPSQRT1024
+		JSR	DIV
+FPSRGLP		BRz	FPSRNRLPI		; branch to Newton Raphson Loop init once we have guess
+		ADD	R3, R3, R4		; increment s by fixed point 1
+		LD	R1, FPSQRT2		; shift w right by 1
+		JSR	DIV
+		BR	FPSRGLP
+
+		;; Refine the square root using Newton Raphson
+		;;
+		;;	for (i = 0; i < 3; i++)
+		;;		s = s + (n - s*s) / (2*s);
+		;;
+FPSRNRLPI	LD	R4, FPSQRTITER	; initialize loop count
+FPSRNRLP	BRz	FPSQRTEND
+		ADD	R0, R3, #0	; compute n-s*s and store in R5
+		ADD	R1, R3, #0
+		JSR	FPMULT
+		NOT	R0, R0
+		ADD	R0, R0, #1
+		ADD	R5, R2, R0
+		ADD	R0, R3, #0	; compute 2*s
+		LD	R1, FPSQRTFP2
+		JSR	FPMULT
+		ADD	R1, R0, #0	; compute s + (n-s*s) / (2*s)
+		ADD	R0, R5, #0
+		JSR	FPDIV
+		ADD	R3, R0, R3
+		ADD	R4, R4, #-1	; decrement loop count and branch to top of loop
+		BR	FPSRNRLP
+
+FPSQRTEND	ADD	R0, R3, #0	; place result in R0
+		LD	R1, FPSQRTR1	; restore used registers before returning
+		LD	R2, FPSQRTR2	
+		LD	R3, FPSQRTR3	
+		LD	R4, FPSQRTR4	
+		LD	R5, FPSQRTR5		
+		LD	R7, FPSQRTR7	
+		ADD	R0, R0, #0	; set condition bits based on result
+		RET			; return result in R0
+		
+FPSQRTR1	.FILL	#0		; saved value of R1
+FPSQRTR2	.FILL	#0		; saved value of R2
+FPSQRTR3	.FILL	#0		; saved value of R3
+FPSQRTR4	.FILL	#0		; saved value of R4
+FPSQRTR5	.FILL	#0		; saved value of R5
+FPSQRTR7	.FILL	#0		; saved value of R7
+FPSQRT2		.FILL	#2
+FPSQRTFP1	.FILL	x0100		; fixed point 1
+FPSQRTFP2	.FILL	x0200		; fixed point 2
+FPSQRT1024	.FILL	#1024
+FPSQRTITER	.FILL	#3
+
+;;-------------- fixed Point multiplication -----------------
+;; This function multiplies two S7.8 fixed point numbers. We first
+;; multiply the two 16 bit numbers using repeated adding, to get a
+;; 32 bit result.  The 32 bit result then has 16 bits of fraction.
+;; We then shift the result to the right by 8 bits to re-normalize
+;; the decimal point.  The result is then returned as an S7.8 fix point.
+;;
+;; INPUT: 	R0 - arg1 (S7.8)
+;;		R1 - arg2 (S7.8)
+;; OUTPUT:	R0 - product (S7.8)
+;;-----------------------------------------------------------
+FPMULT		ST	R2, FPMTR2	; save registers that we need to use
+		ST	R3, FPMTR3
+		ST	R4, FPMTR4
+		ST	R5, FPMTR5
+		ST	R7, FPMTR7
+		ADD	R2, R1, #0	; move arg2 to R2 (dividend)
+		ADD	R1, R0, #0	; move arg1 to R1 (divisor)
+		AND	R3, R3, #0  	; make arg1 positive. R3 will be our result sign
+		ADD	R1, R1, #0	;   test arg1
+		BRzp	FPMTA2		;   already positive, branch to arg2 processing
+		ADD	R3, R3, #1	;   arg1 is negative, set result sign flag to negative
+		NOT	R1, R1		;   negate arg1
+		ADD	R1, R1, #1
+FPMTA2	ADD		R2, R2, #0	; make arg2 positive, test arg2 (this will be our loop counter)
+		BRzp	FPMTLPI		; 	if arg2 already positive, branch to loop initialization
+		NOT	R2, R2		; 	negate arg2
+		ADD	R2, R2, #1
+		ADD	R3, R3, #0	; 	test previous result sign
+		BRz	FPMTSZ		; 	if previous sign positive, branch to set result sign negative
+		AND	R3, R3, #0	;	previous sign negative, set to positive
+		BR	FPMTLPI		;	branch to loop initialization
+FPMTSZ		ADD	R3, R3, #1	;	set result sign to negative
+FPMTLPI		AND	R4, R4, #0	; We use R4 as low bits of 32 bit result
+		AND	R5, R5, #0	; and R5 as high bits of 32 bit result
+FPMTLP	ADD		R2, R2, #0	; perform multiplication by multiple adds (loop)
+		BRz	FPMTNM		; R2 is loop counter, break to decimal normalize handler when zero
+		ADD	R4, R4, R1	; add arg1 to low bits of 32 bit result 
+		ADD	R2, R2, #-1	; decrement loop counter
+		LD	R0, FPMTCM	; Test carry bit in low bits of 32 bit result, load carry mask
+		AND	R0, R4, R0	; 	test carry bit
+		BRz	FPMTLB		; if carry bit not set, branch to bottom of loop
+		LD	R0, FPMTCM	; carry bit set so clear it and increment high order bits
+		NOT	R0, R0
+		AND	R4, R4, R0
+		ADD	R5, R5, #1
+FPMTLB		BR	FPMTLP		; branch to top of loop
+
+		;; build result by shifting the 32 bit result right by 8 bits (re-normalize the decimal)
+		;; we actually do this by appending high bits 0 through 8 to the
+		;; front of the low bits 8 through 14 to form a 16 bit result
+FPMTNM		ADD	R0, R4, #0	; divide low bits by 256 to shift it right 8 bits and save in R4
+		LD	R1, FPMT256
+		JSR	DIV
+		ADD	R4, R0, #0
+		ADD	R0, R5, #0	; multiply high bits 128 to shift it left by 7 bits and save in R5
+		LD	R1, FPMT128
+		JSR	MULT
+		ADD	R5, R0, #0
+		NOT	R4, R4		; or the bits together using de morgans and store in R0
+		NOT	R5, R5
+		AND	R0, R4, R5
+		NOT	R0, R0
+
+FPMTSN	ADD		R3, R3, #0	; fix the sign of the result if necessary
+		BRz	FPMTEND
+		NOT	R0, R0
+		ADD	R0, R0, #1
+FPMTEND	LD		R2, FPMTR2	; restore used registers before returning
+		LD	R3, FPMTR3
+		LD	R4, FPMTR4
+		LD	R5, FPMTR5
+		LD	R7, FPMTR7
+		ADD	R0, R0, #0	; set condition bits based on result
+		RET			; return result in R0
+		
+FPMTR2		.FILL	#0		; saved value of R2
+FPMTR3		.FILL	#0		; saved value of R3
+FPMTR4		.FILL	#0		; saved value of R4
+FPMTR5		.FILL	#0		; saved value of R5
+FPMTR7		.FILL	#0		; saved value of R7
+FPMTCM		.FILL	x8000		; carry bit mask
+FPMT256		.FILL	#256
+FPMT128	.FILL	#128
+
+;;--------------- fixed Point Division ----------------------
+;; This function divides two S7.8 fixed point numbers.  We first
+;; shift the dividend to the left by 8 bits to form a 32 bit number that
+;; has 16 bits of fraction.  We then divide that number by the 16 bit
+;; divisor using repeated subtraction, to get a 16 bit result that
+;; has 8 bits of fraction which is returned as an S7.8
+;;
+;; INPUT: 	R0 - arg1 (S7.8) dividend
+;;			R1 - arg2 (S7.8) divisor
+;; OUTPUT:	R0 - product (S7.8)
+;;-----------------------------------------------------------
+FPDIV		ST	R2, FPDVR2	; save registers that we need to use
+		ST	R3, FPDVR3
+		ST	R4, FPDVR4
+		ST	R5, FPDVR5
+		ST	R6, FPDVR6
+		ST	R7, FPDVR7
+		ADD	R2, R1, #0	; move arg2 to R2 (dividend)
+		ADD	R1, R0, #0	; move arg1 to R1 (divisor)
+		AND	R3, R3, #0  	; make arg1 positive. R3 will be our result sign
+		ADD	R1, R1, #0	;   test arg1
+		BRzp	FPDVA2		;   already positive, branch to arg2 processing
+		ADD	R3, R3, #1	;   arg1 is negative, set result sign flag to negative
+		NOT	R1, R1		;   negate arg1
+		ADD	R1, R1, #1
+FPDVA2	ADD		R2, R2, #0	; make arg2 positive, test arg2 (this will be our loop counter)
+		BRzp	FPDVLPI		; 	if arg2 already positive, branch to loop initialization
+		NOT	R2, R2		; 	negate arg2
+		ADD	R2, R2, #1
+		ADD	R3, R3, #0	; 	test previous result sign
+		BRz	FPDVSZ		; 	if previous sign positive, branch to set result sign negative
+		AND	R3, R3, #0	;	previous sign negative, set to positive
+		BR	FPDVLPI		;	branch to loop initialization
+FPDVSZ		ADD	R3, R3, #1	;	set result sign to negative
+
+FPDVLPI		NOT	R2, R2		; negate divisor for subtracting in our divide loop
+		ADD	R2, R2, #1
+		
+		;; we need to shift the dividend to the left by 8 bits to form a 32 bit number with
+		;; 16 bits of fraction.  We will store the high bits in R5 and the low bits in R4.
+		;; The low bit word will be the original dividend shifted left by 8 with the sign
+		;; bit zeroed. The high bit word will be bits 7 through bit 14 of the original dividend
+		ADD	R5, R1, #0	; first build the low order word, save copy of dividend in R5
+		ADD	R0, R1, #0	; multiply dividend by 256 (left shift 8).
+		LD	R1, FPDV256
+		JSR	MULT
+		ADD	R4, R0, #0	; move low order word to R4, then and out sign bit
+		LD	R0, FPDVCM
+		NOT	R0, R0
+		AND	R4, R4, R0
+		ADD	R0, R5, #0	; build the high order word, divide dividend by 128 (shift right 7)
+		LD	R1, FPDV128
+		JSR	DIV
+		ADD	R5, R0, #0	; move high order word to R5
+		
+		AND	R6, R6, #0	; clear R6 to hold our accumulating result
+
+FPDVLP		ADD	R5, R5, #0	; test high order word
+		BRp	FPDVLC		; continue looping as long as the high and low order words are > 0
+		ADD	R4, R4, #0
+		BRp	FPDVLC
+		BR	FPDVNM		; both high and low order words are zero or less, we exit the loop
+FPDVLC  ADD		R6, R6, #1	; increment accumulating result
+		ADD	R4, R4, R2	; subtract divisor from low order word
+		ADD	R5, R5, #0	; test high order word and if zero branch to bottom of loop
+		BRz	FPDVLB
+		LD	R0, FPDVCM	; Test to see if carry bit is set in low order word, load carry mask
+		AND	R0, R4, R0	; 	test carry bit
+		BRz	FPDVLB		; if carry bit not set, branch to bottom of loop
+		NOT	R0, R0		; carry bit set and high order word not zero, so 
+		AND	R4, R4, R0	; clear carry bit it and decrement high order word
+		ADD	R5, R5, #-1
+FPDVLB		BR	FPDVLP		; branch to top of loop
+
+		;; we now need to check to see if we over ran, this will be true if the low order word
+		;; went negative.  If so we adjust the result by subtracting one
+FPDVNM		ADD	R4, R4, #0
+		BRz	FPDVSN
+		ADD	R6, R6, #-1
+
+FPDVSN		ADD	R0, R6, #0	; move result to R0
+		ADD	R3, R3, #0	; fix the sign of the result if necessary
+		BRz	FPDVEND
+		NOT	R0, R0
+		ADD	R0, R0, #1
+FPDVEND		LD	R2, FPDVR2	; restore used registers before returning
+		LD	R3, FPDVR3
+		LD	R4, FPDVR4
+		LD	R5, FPDVR5
+		LD	R6, FPDVR6
+		LD	R7, FPDVR7
+		ADD	R0, R0, #0	; set condition bits based on result
+		RET			; return result in R0
+		
+FPDVR2		.FILL	#0		; saved value of R2
+FPDVR3		.FILL	#0		; saved value of R3
+FPDVR4		.FILL	#0		; saved value of R4
+FPDVR5		.FILL	#0		; saved value of R5
+FPDVR6		.FILL	#0		; saved value of R6
+FPDVR7		.FILL	#0		; saved value of R7 (saved because we call mult and div functions)
+FPDVCM		.FILL	x8000		; carry bit mask
+FPDV256		.FILL	#256
+FPDV128		.FILL	#128
+
+;;--------------- integer multiplication --------------------
+;; This function multiplies two 16 bit integers and produces a
+;; 16 bit result. Multiplication is done by repeated adds.
+;; We use this function to do left shifts
+;;
+;; INPUT: 	R0 - arg1
+;;		R1 - arg2
+;; OUTPUT:	R0 - product
+;;-----------------------------------------------------------
+MULT		ST	R1, MULTR1	; save registers that we need to use
+		ST	R2, MULTR2
+		ST	R3, MULTR3
+		ADD	R2, R0, #0	; move arg1 to R2 (return value will use R0)
+		AND	R0, R0, #0	; zero result
+		AND	R3, R3, #0  	; make arg2 positive. Save negate result flag in R3
+		ADD	R1, R1, #0	;   test arg2
+		BRzp	MULTLP		;   branch to multiply loop if arg2 already positive
+		ADD	R3, R3, #1	;   set negate result flag
+		NOT	R1, R1		;   arg2 is negative, make positive
+		ADD	R1, R1, #1
+MULTLP		BRz	MULTSN		; perform multiplication by multiple adds (loop)
+		ADD	R0, R0, R2
+		ADD	R1, R1, #-1
+		BR	MULTLP
+MULTSN		ADD	R3, R3, #0	; fix the sign of the result if necessary
+		BRz	MULTEND
+		NOT	R0, R0
+		ADD	R0, R0, #1
+MULTEND		LD	R1, MULTR1	; restore used registers before returning
+		LD	R2, MULTR2	
+		LD	R3, MULTR3
+		ADD	R0, R0, #0	; set condition bits based on result
+		RET					; return result in R0
+		
+MULTR1		.FILL	#0		; saved value of R1
+MULTR2		.FILL	#0		; saved value of R2
+MULTR3		.FILL	#0		; saved value of R3
+
+;;------------------- integer division ----------------------
+;; This function divides two 16 bit integers and produces
+;; a 16 bit result for the quotient and the remainder. Division
+;; is done by repeated subtraction.  We use this function to do
+;; right shifts
+;; INPUT: 	R0 - dividend
+;;		R1 - divisor
+;; OUTPUT:	R0 - quotient
+;;		R1 - remainder
+;;-----------------------------------------------------------
+DIV		ST	R2, DIVR2	; save registers that we need to use
+		ST	R3, DIVR3
+		ADD	R2, R1, #0	; move arg2 to R2
+		ADD	R1, R0, #0	; move arg1 to R1
+		AND	R0, R0, #0	; zero result register
+		AND	R3, R3, #0  	; make arg2 (divisor) negative, R3 will keep track of result sign
+		ADD	R3, R3, #1	; 	assume arg2 is negative
+		ADD	R2, R2, #0	; 	test arg2
+		BRn	DIVA1		; 	branch to arg1 processing if arg2 is already negative
+		AND	R3, R3, #0	; 	arg2 positive, assume result sign is positive
+		NOT	R2, R2		;	negate arg2
+		ADD	R2, R2, #1
+DIVA1		ADD	R1, R1, #0	; make arg1 positive (dividend)
+		BRzp	DIVLOOP		; 	arg1 already positive so branch to divide loop
+		ADD	R3, R3, #0	; 	arg1 negative, test previous result sign
+		BRz	DIVA1Z		;	branch to result sign pos handler
+		AND	R3, R3, #0	; 	set result sign to positive
+		BR	DIVA1N		;	branch to negate arg1 handler
+DIVA1Z		ADD	R3, R3, #1	; 	set result sign to negative
+DIVA1N		NOT	R1, R1		; negate arg1 (dividend) to make it positive
+		ADD	R1, R1, #1
+DIVLOOP		BRnz	DIVFIN		; perform division by multiple subtracts (loop)
+		ADD	R0, R0, #1
+		ADD	R1, R1, R2
+		BR	DIVLOOP
+DIVFIN		ADD	R1, R1, #0	; adjust the result if we overshot and fix the remainder
+		BRz	DIVSN
+		ADD	R0, R0, #-1
+		NOT	R2, R2
+		ADD	R2, R2, #1
+		ADD	R1, R1, R2
+DIVSN		ADD	R3, R3, #0	; fix the sign of the result
+		BRz	DIVEND
+		NOT	R0, R0
+		ADD	R0, R0, #1
+DIVEND		LD	R2, DIVR2	; restore used registers before returning	
+		LD	R3, DIVR3
+		ADD	R0, R0, #0	; set condition bits based on result
+		RET			; return result in R0
+		
+DIVR2		.FILL	#0
+DIVR3		.FILL	#0
+
+;;---------- read fixed point number from console -----------
+;; This function displays the given prompt to the console and
+;; then reads in and parses a fixed point number S7.8
+;; and returns it. (only positive numbers are handled)
+;; INPUT: 	R0 - address of prompt
+;; OUTPUT:	R0 - fixed point number that was read in or -1 on error
+;;-----------------------------------------------------------
+FPREAD		ST	R1, FPRDR1	; save registers
+		ST	R2, FPRDR2
+		ST	R3, FPRDR3
+		ST	R4, FPRDR4
+		ST	R5, FPRDR5
+		ST	R6, FPRDR6
+		ST	R7, FPRDR7
+
+		PUTS			; display the prompt
+
+		;; read in a line worth of characters from the console
+		;; and store them in the FPRDSTR buffer
+		LEA	R6, FPRDSTR	; read data into buffer including new line	
+FPRDLOOP	GETC
+		PUTC
+		STR	R0, R6, #0
+		ADD	R6, R6, #1
+		LD	R2, FPRDNEGNL	; test to see if we have a new line and break;
+		ADD	R2, R0, R2
+		BRz	FPRDINT
+		BR	FPRDLOOP
+
+		;; parse in the integer part of the number and store in R4
+		;; terminated by either a '.' or a new line
+FPRDINT		LEA	R6, FPRDSTR	; get start of buffer
+		AND	R4, R4, #0	; clear R4, and R5 to hold int and frac parts
+		AND	R5, R5, #0
+
+FPRDILOOP	LDR	R0, R6, #0	; get the next character from our buffer
+		ADD	R6, R6, #1	; increment buffer pointer
+
+		LD	R1, FPRDNEGNL	; test to see if we have a new line and break;
+		ADD	R2, R0, R1
+		BRz	FPRDCOMB	
+
+		LD	R1, FPRDNEGDOT	; test for dot and branch to fractional part
+		ADD	R2, R0, R1
+		BRz	FPRDFRAC	
+
+		LD	R2, FPRDNEGZERO	; convert character to digit, store in R2
+		ADD	R2, R0, R2
+
+		BRn	FPRDERROR	; test for digit (less than 0 and greater than 9 is error)
+		LD	R3, FPRDNEG9
+		ADD	R3, R2, R3
+		BRp	FPRDERROR
+		
+		ADD	R0, R4, #0	; multiply current integer part by 10 and add in this digit
+		LD	R1, FPRDTEN
+		JSR	MULT
+		ADD	R4, R0, R2
+		BR	FPRDILOOP
+
+		;; parse in the fractional part of the number into R5
+		;; terminated by a new line.  Keep track of number of
+		;; digits CNT in fractional part as 10^CNT
+FPRDFRAC	AND	R3, R3, #0	; 10^CNT starts out as 1
+		ADD	R3, R3, #1
+FPRDFLOOP	LDR	R0, R6, #0	; get the next character from our buffer
+		ADD	R6, R6, #1	; increment buffer pointer
+
+		LD	R1, FPRDNEGNL	; test to see if we have a new line and break;
+		ADD	R2, R0, R1
+		BRz	FPRDCOMB
+
+		LD	R2, FPRDNEGZERO	; convert input character to digit
+		ADD	R2, R0, R2
+
+		BRn	FPRDERROR	; test for digit (less than 0 and greater than 9 is error)
+		LD	R0, FPRDNEG9
+		ADD	R0, R2, R0
+		BRp	FPRDERROR
+
+		ADD	R0, R5, #0	; multiply current integer part by 10 and add in this digit
+		LD	R1, FPRDTEN
+		JSR	MULT
+		ADD	R5, R0, R2
+
+		ADD	R0, R3, #0	; multipy 10^CNT by 10
+		LD	R1, FPRDTEN
+		JSR	MULT
+		ADD	R3, R0, #0
+
+		BR	FPRDFLOOP
+
+FPRDERROR	AND	R0, R0, #0	; return -1 on error
+		ADD	R0, R0, #-1
+		BR	FPRDRESTORE
+
+		;; now combine the integer and fractional parts to build an S7.8 number.
+		;; We do this by shifting the integer and fractional parts left by 8 so
+		;; that they are both integers in S7.8.  We then divide the fractional
+		;; part by 10^CNT of the number of fractional digits. we then or together
+		;; the fractional part and integer part 
+FPRDCOMB	LD	R1, FPRDOVERFLOW ; check for overflow (too many digits entered)
+		AND	R2, R4, R1
+		BRnp	FPRDERROR
+		AND	R2, R5, R1
+		BRnp	FPRDERROR
+	
+		ADD	R0, R4, #0	; shift left integer part by 8 bits (mult 256)
+		LD	R1, FPRD256
+		JSR	MULT
+		Add	R4, R0, #0
+
+		ADD	R0, R5, #0	; shift left fractional part by 8 bits (mult 256)
+		LD	R1, FPRD256
+		JSR	MULT
+		ADD	R5, R0, #0
+
+		ADD	R0, R5, #0	; divide factional part by 10^CNT
+		ADD	R1, R3, #0
+		JSR	DIV
+		ADD	R5, R0, #0
+
+		NOT	R4, R4		; or together the integer and fractional parts
+		NOT	R5, R5
+		AND	R0, R4, R5
+		NOT	R0, R0
+FPRDRESTORE	LD	R1, FPRDR1	; restore registers
+		LD	R2, FPRDR2
+		LD	R3, FPRDR3
+		LD	R4, FPRDR4
+		LD	R5, FPRDR5
+		LD	R6, FPRDR6
+		LD	R7, FPRDR7
+		ADD	R0, R0, #0
+		RET			
+
+FPRDR1		.FILL	#0
+FPRDR2		.FILL	#0
+FPRDR3		.FILL	#0
+FPRDR4		.FILL	#0
+FPRDR5		.FILL	#0
+FPRDR6		.FILL	#0
+FPRDR7		.FILL	#0
+FPRDNEGZERO	.FILL	xFFD0		; -x30
+FPRDNEG9	.FILL	#-9
+FPRDNEGNL	.FILL	xFFF6
+FPRDTEN		.FILL	xA
+FPRDDOT		.FILL	x2E
+FPRDNEGDOT	.FILL	xFFD2
+FPRD256		.FILL	#256
+FPRDOVERFLOW	.FILL	xFF80		; overflow test mask for both int and frac part
+FPRDSTR		.BLKW	32	#0
+
+;;---------- write fixed point number to console -----------
+;; This function writes a fixed point S7.8 number to the console
+;; with 2 digits of precision
+;;
+;; INPUT: 	R0 - fixed point number to be displayed S7.8
+;; OUTPUT:	none
+;;-----------------------------------------------------------
+FPWRITE		ST	R1, FPWTR1	; save registers
+		ST	R2, FPWTR2
+		ST	R3, FPWTR3
+		ST	R4, FPWTR4
+		ST	R5, FPWTR5
+		ST	R6, FPWTR6
+		ST	R7, FPWTR7
+
+		;; we will build the ascii string representing the number
+		;; in reverse order.  Initialize a pointer to the end of
+		;; the buffer in R6 and place null string terminator there
+		;; string.  As we build the string we decrement the buffer pointer
+		LEA	R6, FPWTSTR	; initialize buffer pointer to end
+		LD	R1, FPWT31
+		ADD	R6, R6, R1	; null terminate string
+		AND	R1, R1, #0
+		STR	R1, R6, #0
+
+		;; separate the integer and fractional part of the number into
+		;; R4 and R5 as integers
+		ADD	R2, R0, #0	; save copy of original number
+		LD	R1, FPWT256	; shift right 8 bits to get integer part
+		JSR	DIV
+		ADD	R4, R0, #0	
+		LD	R1, FPWTFRMASK	; multiply lower 8 bits by 100 and shift right
+		AND	R0, R2, R1	; by 8 bits to get lower part
+		LD	R1, FPWT100
+		JSR	MULT
+		LD	R1, FPWT256
+		JSR	DIV
+		ADD	R5, R0, #0
+		
+		;; build two ascii digits of fraction in the output buffer in reverse order
+		ADD	R0, R5, #0	; test for 00 case and jump to 00 handler if so
+		BRz	FPWTFR00
+		LD	R1, FPWT10	; divide by 10 to get the quotent and remainder
+		JSR	DIV
+		LD	R2, FPWTZERO	; convert remainder (low order digit) to ascii and store in output string
+		ADD	R3, R1, R2
+		ADD	R6, R6, #-1
+		STR	R3, R6, #0
+		ADD	R3, R0, R2	; convert next digit to ascii and store in output string
+		ADD	R6, R6, #-1
+		STR	R3, R6, #0
+		BR	FPWTINT		
+
+FPWTFR00	LD	R3, FPWTZERO	; fraction was zero so add two zeros to output string
+		ADD	R6, R6, #-1
+		STR	R3, R6, #0
+		ADD	R6, R6, #-1
+		STR	R3, R6, #0
+
+		;; build the digits of the integer part in reverse order
+FPWTINT		LD	R3, FPWTDOT	; write decimal to output string
+		ADD	R6, R6, #-1
+		STR	R3, R6, #0
+		ADD	R0, R4, #0
+FPWTLOOP	BRz	FPWTPRINT
+		LD	R1, FPWT10
+		JSR	DIV
+		LD	R2, FPWTZERO
+		ADD	R3, R1, R2
+		ADD	R6, R6, #-1
+		STR	R3, R6, #0
+		ADD	R0, R0, #0
+		BR	FPWTLOOP
+
+FPWTPRINT	ADD	R0, R6, #0	; display the string representing the number
+		PUTS		
+
+		LD	R1, FPWTR1	; restore registers
+		LD	R2, FPWTR2
+		LD	R3, FPWTR3
+		LD	R4, FPWTR4
+		LD	R5, FPWTR5
+		LD	R6, FPWTR6
+		LD	R7, FPWTR7
+		RET			
+
+FPWTR1		.FILL	#0
+FPWTR2		.FILL	#0
+FPWTR3		.FILL	#0
+FPWTR4		.FILL	#0
+FPWTR5		.FILL	#0
+FPWTR6		.FILL	#0
+FPWTR7		.FILL	#0
+FPWTZERO	.FILL	x30
+FPWTNL		.FILL	xA
+FPWT10		.FILL	#10
+FPWT100		.FILL	#100
+FPWTDOT		.FILL	x2E
+FPWTFRMASK	.FILL	x00FF
+FPWT256		.FILL	#256
+FPWT31		.FILL	#31
+FPWTSTR		.BLKW	32	#0
+
+
+
+;;-----------------------------------------------------------
+		.END

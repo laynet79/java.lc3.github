@@ -1,0 +1,24 @@
+		.ORIG 0
+BEGIN	LEA R6, STR
+		LEA R0 PROMPT
+		PUTS
+LOOP	GETC
+		OUT
+		STR	R0, R6, #0
+		ADD	R6, R6, #1
+		LD  R1, NEGNL
+		ADD R1, R0, R1
+		BRz END
+		BR	LOOP
+		
+END		AND	R0, R0, #0
+		STR R0, R6, #0
+		LEA R0, STR
+		PUTS
+		BR	BEGIN
+		HALT
+
+PROMPT	.STRINGZ "Enter a number: "
+NEGNL	.FILL xFFF6
+STR		.BLKW	32	#0
+		.END
